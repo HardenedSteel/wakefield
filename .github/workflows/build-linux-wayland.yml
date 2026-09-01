@@ -2,9 +2,17 @@ name: 'Build Wakefield (Wayland)'
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'build-jdk-28+13'
+    inputs:
+      wakefield_ref:
+        description: 'Wakefield Branch or Tag to build'
+        required: true
+        default: 'jdk-28+13'
+        type: string
+      boot_jdk_version:
+        description: 'Boot JDK Version'
+        required: true
+        default: '26'
+        type: string
 
 jobs:
   build-linux-x64:
@@ -13,10 +21,21 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout Source
-        uses: actions/checkout@v4
+      - name: Resolve Version and Tag Names
+        id: vars
+        run: |
+          RAW_REF="${{ github.event.inputs.wakefield_ref || 'jdk-28+13' }}"
+          # Replace '+' and '/' with '-' for clean filenames and release tags
+          CLEAN_TAG=$(echo "$RAW_REF" | tr '+' '-' | tr '/' '-')
+          echo "raw_ref=$RAW_REF" >> $GITHUB_OUTPUT
+          echo "clean_tag=$CLEAN_TAG" >> $GITHUB_OUTPUT
 
-      - name: Install Build & Wayland Dependencies
+      - name: Checkout Source at Selected Ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.vars.outputs.raw_ref }}
+
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -39,15 +58,14 @@ jobs:
             libgl1-mesa-dev
 
       - name: Setup Boot JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
-          java-version: '26'
+          java-version: ${{ github.event.inputs.boot_jdk_version || '26' }}
 
-      - name: Configure OpenJDK with Wayland
+      - name: Configure OpenJDK
         run: |
           bash configure \
-            --enable-wayland \
             --with-debug-level=release \
             --with-jvm-variants=server \
             --with-boot-jdk="$JAVA_HOME" \
@@ -57,18 +75,25 @@ jobs:
         run: |
           make images
 
-      - name: Archive Bundle and Compute SHA-256
+      - name: Package JDK and Compute SHA-256
         run: |
           cd build/linux-x86_64-server-release/images/
-          tar -czvf wakefield-jdk-28-13-linux-x64.tar.gz jdk/
-          sha256sum wakefield-jdk-28-13-linux-x64.tar.gz > wakefield-jdk-28-13-linux-x64.tar.gz.sha256
-          mv wakefield-jdk-28-13-linux-x64.tar.gz* $GITHUB_WORKSPACE/
+          
+          TARBALL_NAME="wakefield-${{ steps.vars.outputs.clean_tag }}-linux-x64.tar.gz"
+          tar -czvf "$TARBALL_NAME" jdk/
+          sha256sum "$TARBALL_NAME" > "${TARBALL_NAME}.sha256"
+          
+          mv wakefield-* $GITHUB_WORKSPACE/
 
-      - name: Upload JDK Release Asset
+      - name: Display Checksum
+        run: |
+          cat wakefield-${{ steps.vars.outputs.clean_tag }}-linux-x64.tar.gz.sha256
+
+      - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: jdk-28-13-release
-          name: "OpenJDK Wakefield jdk-28+13 (Wayland)"
+          tag_name: ${{ steps.vars.outputs.clean_tag }}
+          name: "OpenJDK Wakefield ${{ steps.vars.outputs.raw_ref }} (Wayland)"
           files: |
-            wakefield-jdk-28-13-linux-x64.tar.gz
-            wakefield-jdk-28-13-linux-x64.tar.gz.sha256
+            wakefield-${{ steps.vars.outputs.clean_tag }}-linux-x64.tar.gz
+            wakefield-${{ steps.vars.outputs.clean_tag }}-linux-x64.tar.gz.sha256
